@@ -3,6 +3,7 @@ import pickle
 import os
 import numpy as np
 import pandas as pd
+from scipy.optimize import linprog
 
 
 '''
@@ -74,67 +75,48 @@ class Agent(object):
         pass
 
     def action(self, obs):
-        '''
-        This function is called every time the agent needs to choose an action by the environment.
-        '''
-
         new_buyer_covariates, last_sale, state, inventories, time_until_replenish = obs
         self._process_last_sale(last_sale, state, inventories, time_until_replenish)
 
         # Getting the inventory level of our agent (assumes inventories is a vector, so we take the first value)
         inventory_level = inventories[0]
 
+        # Load training data to determine price range
         train_pricing_decisions = pd.read_csv('agents/pricepioneers/train_prices_decisions_2024.csv')
-        
         min_price_threshold = np.percentile(train_pricing_decisions['price_item'], 10)
         prices_to_predict = np.arange(min_price_threshold, train_pricing_decisions['price_item'].max() + train_pricing_decisions['price_item'].mean(), 4)
 
+        # Load Random Forest model for demand prediction
         with open('agents/pricepioneers/randomforrest_model.pkl', 'rb') as f:
             rf_model = pickle.load(f)
 
-        # Helper functions within action:
-        def predict_optimal_price(df, prices_to_predict, rf_model):
-            expanded_covariates = pd.DataFrame(np.tile(df[['Covariate1', 'Covariate2', 'Covariate3']].values, (len(prices_to_predict), 1)),
-                                            columns=['Covariate1', 'Covariate2', 'Covariate3'])
+        # Predict demand for each price
+        demand_predictions = []
+        for price in prices_to_predict:
+            # Prepare input data and predict demand probability using the Random Forest model
+            input_data = pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3'])
+            price_data = pd.DataFrame({'price_item': [price]})
+            expanded_data = pd.concat([input_data, price_data], axis=1)
+            demand_prob = rf_model.predict_proba(expanded_data)[:, 1]  # Predicted probability of purchase
+            demand_predictions.append(demand_prob)
+        
+        demand_predictions = np.array(demand_predictions)
 
-            expanded_prices = np.repeat(prices_to_predict, len(df))
-            expanded_data = pd.DataFrame({
-                'price_item': expanded_prices,
-                'Covariate1': expanded_covariates['Covariate1'],
-                'Covariate2': expanded_covariates['Covariate2'],
-                'Covariate3': expanded_covariates['Covariate3']
-            })
-            predictions = rf_model.predict_proba(expanded_data)[:, 1]  
-            predictions_matrix = predictions.reshape(len(df), len(prices_to_predict))
-            revenues_matrix = predictions_matrix * prices_to_predict
-            max_revenue_prices = prices_to_predict[np.argmax(revenues_matrix, axis=1)]
-            df['predicted_price'] = max_revenue_prices
-            demand_prediction_df = pd.DataFrame(predictions_matrix, columns=prices_to_predict)
-            return df, demand_prediction_df
+        # Set up the linear programming problem for revenue maximization
+        revenue = prices_to_predict * demand_predictions  # Revenue from each price option
+        revenue = -revenue  # Negative because linprog minimizes the objective
 
-        def get_single_step_revenue_maximizing_price_and_revenue_k(Vtplus1k, Vtplus1kminus1, price_options, demand_predictions):
-            price_options = np.array(price_options, dtype=np.float64)
-            demand_predictions = np.array(demand_predictions, dtype=np.float64)
-            rev_list = (price_options + Vtplus1kminus1) * demand_predictions + (1 - demand_predictions) * Vtplus1k
-            opt_index = np.argmax(rev_list)
-            return price_options[opt_index], rev_list[opt_index]
+        # Constraints: ensure no more than 12 products are sold for every 20 customers
+        A_ub = np.ones((1, len(prices_to_predict)))  # All prices contribute to the sales
+        b_ub = [12]  # 12 units available to sell
 
-        def get_prices_over_time_and_expected_revenue_k(prices, demand_predictions, T, K):
-            prices = np.array(prices, dtype=np.float64)
-            demand_predictions = np.array(demand_predictions, dtype=np.float64)
-            opt_price_list = np.zeros((T, K + 1), dtype=np.float64)
-            V = np.zeros((T + 1, K + 1), dtype=np.float64)
+        # Solve the linear program
+        result = linprog(revenue, A_ub=A_ub, b_ub=b_ub, method='highs')
 
-            for t in range(T - 1, -1, -1):
-                V_t_k = V[t + 1, 1:]
-                V_t_k_minus_1 = V[t + 1, :-1]
-                rev_list = (prices + V_t_k_minus_1[:, None]) * demand_predictions + (1 - demand_predictions) * V_t_k[:, None]
-                opt_index = np.argmax(rev_list, axis=1)
-                opt_prices = prices[opt_index]
-                max_values = np.max(rev_list, axis=1)
-                V[t, 1:] = max_values
-                opt_price_list[t, 1:] = opt_prices
-            return opt_price_list, V
+        # Extract the optimal price from the result
+        optimal_price = result.x[np.argmax(result.x)]  # Select the price that maximizes revenue
+
+        #return optimal_price
 
         # Load threshold data (these are the thresholds you need)
         threshold_10percentile = pd.read_csv('agents/pricepioneers/threshold_10percentile.csv')
@@ -153,19 +135,8 @@ class Agent(object):
             else:
                 return opt_price
 
-        # Predict optimal price
-        optimal_price, demand_prediction = predict_optimal_price(
-            pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3']),
-            prices_to_predict, rf_model
-        )
-        
-        # Get the optimal price considering expected revenue over time and inventory
-        opt_price = get_prices_over_time_and_expected_revenue_k(
-            prices_to_predict, demand_prediction, T=21 - time_until_replenish, K=inventory_level
-        )[0][0][-1]
-
         # Apply threshold function to adjust the price based on inventory and time
-        opt_price = threshold_func(opt_price, inventory_level, time_until_replenish, threshold_avg, threshold_10percentile)
+        opt_price = threshold_func(optimal_price, inventory_level, time_until_replenish, threshold_avg, threshold_10percentile)
         
         return opt_price
         
