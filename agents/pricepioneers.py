@@ -76,22 +76,13 @@ class Agent(object):
     def action(self, obs):
         '''
         This function is called every time the agent needs to choose an action by the environment.
-
-        The input 'obs' is a 5-tuple, containing the following information:
-        -- new_buyer_covariates: a vector of length 3, containing the covariates of the new buyer.
-        -- last_sale: a tuple of length 2. The first element is the index of the agent that made the last sale, if it is NaN, then the customer did not make a purchase. The second element is a numpy array of length n_agents, containing the prices that were offered by each agent in the last sale.
-        -- state: a vector of length n_agents, containing the current profit of each agent.
-        -- inventories: a vector of length n_agents, containing the current inventory level of each agent.
-        -- time_until_replenish: an integer indicating the time until the next replenishment, by which time your (and your opponent's, in part 2) remaining inventory will be reset to the inventory limit.
-
-        The expected output is a single number, indicating the price that you would post for the new buyer.
         '''
 
         new_buyer_covariates, last_sale, state, inventories, time_until_replenish = obs
         self._process_last_sale(last_sale, state, inventories, time_until_replenish)
 
-        # Getting the inventory level of our agent
-        inventories = inventories[0]
+        # Getting the inventory level of our agent (assumes inventories is a vector, so we take the first value)
+        inventory_level = inventories[0]
 
         train_pricing_decisions = pd.read_csv('agents/pricepioneers/train_prices_decisions_2024.csv')
         
@@ -103,7 +94,7 @@ class Agent(object):
 
         # Helper functions within action:
         def predict_optimal_price(df, prices_to_predict, rf_model):
-            expanded_covariates = np.DataFrame(np.tile(df[['Covariate1', 'Covariate2', 'Covariate3']].values, (len(prices_to_predict), 1)),
+            expanded_covariates = pd.DataFrame(np.tile(df[['Covariate1', 'Covariate2', 'Covariate3']].values, (len(prices_to_predict), 1)),
                                             columns=['Covariate1', 'Covariate2', 'Covariate3'])
 
             expanded_prices = np.repeat(prices_to_predict, len(df))
@@ -144,15 +135,21 @@ class Agent(object):
                 V[t, 1:] = max_values
                 opt_price_list[t, 1:] = opt_prices
             return opt_price_list, V
-        
-         # Load threshold data (these are the thresholds you need)
+
+        # Load threshold data (these are the thresholds you need)
         threshold_10percentile = pd.read_csv('agents/pricepioneers/threshold_10percentile.csv')
         threshold_avg = pd.read_csv('agents/pricepioneers/threshold_avg.csv')
 
-        def threshold_func(opt_price, k, t, threshold_avg = threshold_avg, threshold_10percentile = threshold_10percentile):
-            column_index = min(20 - t, threshold_10percentile.shape[1] - 1)
-            if opt_price < threshold_10percentile.iloc[k, column_index]:
-                return threshold_avg.iloc[k, column_index]
+        def threshold_func(opt_price, inventory_level, time_until_replenish, threshold_avg, threshold_10percentile):
+            # Ensure inventory_level is within the valid range (0 to 11)
+            inventory_level = min(inventory_level, threshold_10percentile.shape[0] - 1)  # Should be between 0 and 11
+
+            # Calculate the column index for time (ensure it's within bounds)
+            column_index = min(20 - time_until_replenish, threshold_10percentile.shape[1] - 1)  # Make sure time index is valid
+            
+            # Now safely access the thresholds
+            if opt_price < threshold_10percentile.iloc[inventory_level, column_index]:
+                return threshold_avg.iloc[inventory_level, column_index]
             else:
                 return opt_price
 
@@ -161,13 +158,15 @@ class Agent(object):
             pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3']),
             prices_to_predict, rf_model
         )
+        
+        # Get the optimal price considering expected revenue over time and inventory
         opt_price = get_prices_over_time_and_expected_revenue_k(
-            prices_to_predict, demand_prediction, T=21 - time_until_replenish, K=inventories
+            prices_to_predict, demand_prediction, T=21 - time_until_replenish, K=inventory_level
         )[0][0][-1]
 
-        # Apply threshold function with threshold_avg and threshold_10percentile
-        opt_price = threshold_func(opt_price, time_until_replenish, inventories,
-                                    threshold_avg = threshold_avg, threshold_10percentile = threshold_10percentile)
+        # Apply threshold function to adjust the price based on inventory and time
+        opt_price = threshold_func(opt_price, inventory_level, time_until_replenish, threshold_avg, threshold_10percentile)
+        
         return opt_price
         
 
