@@ -149,7 +149,7 @@ class Agent(object):
         threshold_10percentile = pd.read_csv('agents/pricepioneers/threshold_10percentile.csv')
         threshold_avg = pd.read_csv('agents/pricepioneers/threshold_avg.csv')
 
-        def threshold_func(opt_price, k, t):
+        def threshold_func(opt_price, k, t, threshold_avg = threshold_avg, threshold_10percentile = threshold_10percentile):
             column_index = min(20 - t, threshold_10percentile.shape[1] - 1)
             if opt_price < threshold_10percentile.iloc[k, column_index]:
                 return threshold_avg.iloc[k, column_index]
@@ -166,8 +166,8 @@ class Agent(object):
         )[0][0][-1]
 
         # Apply threshold function with threshold_avg and threshold_10percentile
-        opt_price = threshold_func(opt_price, time_until_replenish, inventories)
-        
+        opt_price = threshold_func(opt_price, time_until_replenish, inventories,
+                                    threshold_avg = threshold_avg, threshold_10percentile = threshold_10percentile)
         return opt_price
         
 
