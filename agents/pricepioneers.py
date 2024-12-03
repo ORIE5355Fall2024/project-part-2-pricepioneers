@@ -157,13 +157,15 @@ class Agent(object):
         threshold_avg = pd.read_csv('agents/pricepioneers/threshold_avg.csv')
         
         def threshold_func(opt_price, k, t, threshold_avg, threshold_10percentile):
-            # Ensure the column index stays within bounds of the threshold_10percentile columns
-            column_index = min(20 - t, threshold_10percentile.shape[1] - 1)
+            # Calculate the column index and make sure it's within the valid range
+            column_index = min(20 - t, threshold_10percentile.shape[1] - 1)  # Ensure it doesn't exceed the last column index
             
+            # Check if the optimal price is less than the threshold value at the calculated index
             if opt_price < threshold_10percentile.iloc[k, column_index]:
                 return threshold_avg.iloc[k, column_index]
             else:
                 return opt_price
+
 
             
         optimal_price, demand_prediction = predict_optimal_price(pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3']),
