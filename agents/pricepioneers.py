@@ -77,7 +77,7 @@ class Agent(object):
         '''
         This function is called every time the agent needs to choose an action by the environment.
 
-        The input 'obs' is a 5 tuple, containing the following information:
+        The input 'obs' is a 5-tuple, containing the following information:
         -- new_buyer_covariates: a vector of length 3, containing the covariates of the new buyer.
         -- last_sale: a tuple of length 2. The first element is the index of the agent that made the last sale, if it is NaN, then the customer did not make a purchase. The second element is a numpy array of length n_agents, containing the prices that were offered by each agent in the last sale.
         -- state: a vector of length n_agents, containing the current profit of each agent.
@@ -90,27 +90,20 @@ class Agent(object):
         new_buyer_covariates, last_sale, state, inventories, time_until_replenish = obs
         self._process_last_sale(last_sale, state, inventories, time_until_replenish)
 
-        ### currently output is just a deterministic price for the item
-        ### but you are expected to use the new_buyer_covariates
-        ### combined with models you come up with using the training data 
-        ### and history of prices from each team to set a better price for the item
-        #return 30.123 #112.358
-        
         # Getting the inventory level of our agent
         inventories = inventories[0]
-        
+
         train_pricing_decisions = pd.read_csv('agents/pricepioneers/train_prices_decisions_2024.csv')
         
-        min_price_threshold = np.percentile(train_pricing_decisions['price_item'], 25)
-        prices_to_predict = np.arange(min_price_threshold, train_pricing_decisions['price_item'].max()+train_pricing_decisions['price_item'].mean(), 4)
-        
+        min_price_threshold = np.percentile(train_pricing_decisions['price_item'], 10)
+        prices_to_predict = np.arange(min_price_threshold, train_pricing_decisions['price_item'].max() + train_pricing_decisions['price_item'].mean(), 4)
+
         with open('agents/pricepioneers/randomforrest_model.pkl', 'rb') as f:
             rf_model = pickle.load(f)
-   
 
-        
+        # Helper functions within action:
         def predict_optimal_price(df, prices_to_predict, rf_model):
-            expanded_covariates = pd.DataFrame(np.tile(df[['Covariate1', 'Covariate2', 'Covariate3']].values, (len(prices_to_predict), 1)),
+            expanded_covariates = np.DataFrame(np.tile(df[['Covariate1', 'Covariate2', 'Covariate3']].values, (len(prices_to_predict), 1)),
                                             columns=['Covariate1', 'Covariate2', 'Covariate3'])
 
             expanded_prices = np.repeat(prices_to_predict, len(df))
@@ -127,7 +120,7 @@ class Agent(object):
             df['predicted_price'] = max_revenue_prices
             demand_prediction_df = pd.DataFrame(predictions_matrix, columns=prices_to_predict)
             return df, demand_prediction_df
-        
+
         def get_single_step_revenue_maximizing_price_and_revenue_k(Vtplus1k, Vtplus1kminus1, price_options, demand_predictions):
             price_options = np.array(price_options, dtype=np.float64)
             demand_predictions = np.array(demand_predictions, dtype=np.float64)
@@ -151,27 +144,30 @@ class Agent(object):
                 V[t, 1:] = max_values
                 opt_price_list[t, 1:] = opt_prices
             return opt_price_list, V
-
         
+         # Load threshold data (these are the thresholds you need)
         threshold_10percentile = pd.read_csv('agents/pricepioneers/threshold_10percentile.csv')
         threshold_avg = pd.read_csv('agents/pricepioneers/threshold_avg.csv')
-        
-        def threshold_func(opt_price, k, t, threshold_avg, threshold_10percentile):
-            # Calculate the column index and make sure it's within the valid range
-            column_index = min(20 - t, threshold_10percentile.shape[1] - 1)  # Ensure it doesn't exceed the last column index
-            
-            # Check if the optimal price is less than the threshold value at the calculated index
+
+        def threshold_func(opt_price, k, t):
+            column_index = min(20 - t, threshold_10percentile.shape[1] - 1)
             if opt_price < threshold_10percentile.iloc[k, column_index]:
                 return threshold_avg.iloc[k, column_index]
             else:
                 return opt_price
 
+        # Predict optimal price
+        optimal_price, demand_prediction = predict_optimal_price(
+            pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3']),
+            prices_to_predict, rf_model
+        )
+        opt_price = get_prices_over_time_and_expected_revenue_k(
+            prices_to_predict, demand_prediction, T=21 - time_until_replenish, K=inventories
+        )[0][0][-1]
 
-            
-        optimal_price, demand_prediction = predict_optimal_price(pd.DataFrame([new_buyer_covariates], columns=['Covariate1', 'Covariate2', 'Covariate3']),
-                                                                 prices_to_predict, rf_model)
-        opt_price =  get_prices_over_time_and_expected_revenue_k(prices_to_predict, demand_prediction, T=21-time_until_replenish, K=inventories)[0][0][-1]
+        # Apply threshold function with threshold_avg and threshold_10percentile
         opt_price = threshold_func(opt_price, time_until_replenish, inventories)
+        
         return opt_price
         
 
